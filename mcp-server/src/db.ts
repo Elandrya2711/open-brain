@@ -1,19 +1,21 @@
 import { Pool } from 'pg';
 
 // Build pool config from environment variables
-// Using individual config properties instead of connectionString to avoid
-// URL-encoding issues with special characters in passwords (e.g., #, !, @)
+// Prefer individual config vars over DATABASE_URL to avoid URL-encoding issues
+// with special characters in passwords (e.g., #, !, @)
 const dbUrl = process.env.DATABASE_URL;
-console.error('[db] DATABASE_URL env var:', dbUrl ? `${dbUrl.substring(0, 50)}...` : 'NOT SET');
+const hasIndividualVars = !!(process.env.DB_HOST || process.env.DB_USER || process.env.DB_PASSWORD);
+
+console.error('[db] Configuration:', {
+  databaseUrl: dbUrl ? `${dbUrl.substring(0, 50)}...` : 'NOT SET',
+  hasIndividualVars,
+});
 
 let poolConfig: any;
 
-if (dbUrl) {
-  // Try to use DATABASE_URL if provided
-  console.error('[db] Using DATABASE_URL connection string');
-  poolConfig = { connectionString: dbUrl };
-} else {
-  // Fallback to individual environment variables (safer for special characters)
+// Prefer individual config variables for better special-char handling
+if (hasIndividualVars || !dbUrl) {
+  // Use individual environment variables (safer for special characters)
   const host = process.env.DB_HOST || 'postgres';
   const port = parseInt(process.env.DB_PORT || '5432', 10);
   const user = process.env.DB_USER || 'openbrain';
@@ -38,6 +40,10 @@ if (dbUrl) {
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 2000,
   };
+} else {
+  // Fallback to DATABASE_URL if no individual vars set
+  console.error('[db] Using DATABASE_URL connection string (may fail with special-char passwords)');
+  poolConfig = { connectionString: dbUrl };
 }
 
 const pool = new Pool(poolConfig);

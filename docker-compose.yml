@@ -22,7 +22,13 @@ services:
       - "3000:3000"
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      DATABASE_URL: postgresql://openbrain:${POSTGRES_PASSWORD}@postgres:5432/openbrain
+      # Use individual DB config to handle passwords with special characters
+      # DATABASE_URL is NOT set to avoid URL-encoding issues with special chars like # ! @
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: openbrain
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: openbrain
       OPEN_BRAIN_API_KEY: ${OPEN_BRAIN_API_KEY}
       NODE_ENV: ${NODE_ENV:-production}
     depends_on:
