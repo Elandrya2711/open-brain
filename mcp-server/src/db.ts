@@ -57,6 +57,98 @@ pool.on('connect', () => {
   console.error('[db] Connection pool connected successfully');
 });
 
+// Auto-migration: Initialize schema if it doesn't exist
+async function initializeSchema() {
+  try {
+    console.error('[db.migration] Checking database schema...');
+
+    // Check if pgvector extension exists, create if missing
+    await pool.query('CREATE EXTENSION IF NOT EXISTS vector;');
+    console.error('[db.migration] pgvector extension OK');
+
+    // Check if memories table exists
+    const tableExists = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_schema = 'public'
+        AND table_name = 'memories'
+      );
+    `);
+
+    if (!tableExists.rows[0].exists) {
+      console.error('[db.migration] Creating memories table...');
+      await pool.query(`
+        CREATE TABLE memories (
+          id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          content     TEXT NOT NULL,
+          summary     TEXT,
+          embedding   vector(1536),
+          type        TEXT DEFAULT 'note',
+          source      TEXT DEFAULT 'claude-code',
+          created_at  TIMESTAMPTZ DEFAULT NOW(),
+          updated_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+      console.error('[db.migration] Memories table created');
+    } else {
+      console.error('[db.migration] Memories table exists');
+    }
+
+    // Create indexes
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_memories_embedding
+      ON memories USING ivfflat (embedding vector_cosine_ops)
+      WITH (lists = 100);
+    `);
+    console.error('[db.migration] Embedding index OK');
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_memories_type_created
+      ON memories (type, created_at DESC);
+    `);
+    console.error('[db.migration] Type/date index OK');
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_memories_created
+      ON memories (created_at DESC);
+    `);
+    console.error('[db.migration] Created date index OK');
+
+    // Create trigger function and trigger
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION update_memories_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    console.error('[db.migration] Trigger function OK');
+
+    await pool.query(`
+      DROP TRIGGER IF EXISTS trigger_memories_updated_at ON memories;
+      CREATE TRIGGER trigger_memories_updated_at
+      BEFORE UPDATE ON memories
+      FOR EACH ROW
+      EXECUTE FUNCTION update_memories_updated_at();
+    `);
+    console.error('[db.migration] Update trigger OK');
+
+    console.error('[db.migration] ✅ Schema initialization complete');
+  } catch (error) {
+    console.error('[db.migration] ❌ Error initializing schema:',
+      error instanceof Error ? error.message : error);
+    throw error;
+  }
+}
+
+// Initialize schema on startup
+initializeSchema().catch(error => {
+  console.error('[db] Fatal: Schema initialization failed:', error);
+  process.exit(1);
+});
+
 export interface Memory {
   id: string;
   content: string;
