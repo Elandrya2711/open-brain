@@ -1,0 +1,45 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aibrain-postgres
+    environment:
+      POSTGRES_DB: openbrain
+      POSTGRES_USER: openbrain
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openbrain"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aibrain
+
+  mcp-server:
+    build: ./mcp-server
+    container_name: aibrain-mcp-server-1
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DATABASE_URL: postgresql://openbrain:${POSTGRES_PASSWORD}@postgres:5432/openbrain
+      OPEN_BRAIN_API_KEY: ${OPEN_BRAIN_API_KEY}
+      NODE_ENV: ${NODE_ENV:-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    stdin_open: true
+    tty: true
+    networks:
+      - aibrain
+
+volumes:
+  pgdata:
+
+networks:
+  aibrain:
+    driver: bridge
