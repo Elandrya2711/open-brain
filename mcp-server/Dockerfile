@@ -7,8 +7,8 @@ WORKDIR /app
 COPY package.json ./
 
 # Install all dependencies (including devDependencies for build)
-# npm install is safer than npm ci when package-lock.json doesn't exist
-RUN npm install --no-audit
+# Force devDependencies installation even if NODE_ENV=production
+RUN npm install --no-audit --include=dev
 
 # Copy source
 COPY src ./src
