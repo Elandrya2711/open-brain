@@ -1,29 +1,41 @@
-FROM node:20-alpine
+# Build stage
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
 # Copy package files
-COPY package*.json ./
+COPY package.json package-lock.json* ./
 
-# Install dependencies
-RUN npm ci --prefer-offline --no-audit || npm install
+# Install all dependencies (including devDependencies for build)
+RUN npm ci --no-audit || npm install
 
-# Copy source and config
+# Copy source
 COPY src ./src
 COPY tsconfig.json ./
 
-# Build TypeScript
+# Build
 RUN npm run build
 
-# Remove dev dependencies (optional - keeps image smaller)
-# RUN npm prune --production
+# Runtime stage
+FROM node:20-alpine
 
-# Expose port for HTTP MCP endpoint
+WORKDIR /app
+
+# Copy package files from builder
+COPY package.json package-lock.json* ./
+
+# Install only production dependencies
+RUN npm ci --production --no-audit || npm install --production
+
+# Copy built application from builder
+COPY --from=builder /app/dist ./dist
+
+# Expose port
 EXPOSE 3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
-# Run with stdin/stdout open for MCP stdio transport
-CMD ["npm", "start"]
+# Run
+CMD ["node", "dist/index.js"]
