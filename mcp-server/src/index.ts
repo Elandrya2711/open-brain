@@ -6,7 +6,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { randomUUID } from 'crypto';
 import express from 'express';
 import { tools, getTool } from './tools/index.js';
 import { closePool } from './db.js';
@@ -93,10 +92,8 @@ async function startMcpServer() {
   console.error('[MCP Server] Connected via stdio transport');
 }
 
-// Session tracking: maps session ID -> { server, transport }
-const sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport }>();
-
 // HTTP Server for external clients (with Bearer token auth)
+// Stateless: each request gets a fresh Server + Transport instance
 function startHttpServer() {
   const app = express();
   app.use(express.json());
@@ -125,46 +122,25 @@ function startHttpServer() {
     res.json({ status: 'ok' });
   });
 
-  // Standard MCP HTTP transport endpoint (handles POST for JSON-RPC, GET for SSE, DELETE for session close)
+  // Standard MCP HTTP transport endpoint (stateless, fresh instance per request)
   app.all('/mcp', authMiddleware, async (req, res) => {
-    // Check for existing session via Mcp-Session-Id header
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    let session = sessionId ? sessions.get(sessionId) : undefined;
+    try {
+      // Fresh instance per request: create Server + Transport pair
+      const server = createMcpServer();
+      registerToolHandlers(server);
 
-    if (session) {
-      // Reuse existing session's transport
-      await session.transport.handleRequest(req, res, req.body);
-      return;
-    }
+      // Stateless mode: no sessionIdGenerator, no session tracking
+      const transport = new StreamableHTTPServerTransport();
 
-    // For non-POST without a valid session, reject
-    if (req.method !== 'POST') {
-      res.status(400).json({ error: 'No valid session. Send an initialize request first.' });
-      return;
-    }
-
-    // New session: create Server + Transport pair
-    const server = createMcpServer();
-    registerToolHandlers(server);
-
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (newSessionId: string) => {
-        sessions.set(newSessionId, { server, transport });
-        console.error(`[HTTP Server] Session initialized: ${newSessionId}`);
-      },
-    });
-
-    transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid) {
-        sessions.delete(sid);
-        console.error(`[HTTP Server] Session closed: ${sid}`);
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error('[HTTP Server] Error handling MCP request:', message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: message });
       }
-    };
-
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    }
   });
 
   app.listen(PORT, '0.0.0.0', () => {
