@@ -119,11 +119,79 @@ function startHttpServer() {
 
   // Standard MCP HTTP transport endpoint
   app.post('/mcp', authMiddleware, async (req, res) => {
+    // Create a fresh server instance for this HTTP request
+    const httpServer = new Server(
+      {
+        name: 'open-brain',
+        version: '1.0.0',
+      },
+      {
+        capabilities: {
+          tools: {},
+        },
+      }
+    );
+
+    // Register handlers on the HTTP server instance
+    httpServer.setRequestHandler(ListToolsRequestSchema, async () => {
+      return {
+        tools: tools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+        })),
+      };
+    });
+
+    httpServer.setRequestHandler(CallToolRequestSchema, async request => {
+      const toolName = request.params.name;
+      const toolInput = request.params.arguments;
+
+      const tool = getTool(toolName);
+      if (!tool) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: `Unknown tool: ${toolName}`,
+              }),
+            },
+          ],
+        };
+      }
+
+      try {
+        const result = await tool.handler(toolInput);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result),
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: message,
+              }),
+            },
+          ],
+        };
+      }
+    });
+
+    // Create transport and handle request
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // Stateless - each request is independent
     });
 
-    await server.connect(transport);
+    await httpServer.connect(transport);
     await transport.handleRequest(req, res);
   });
 
