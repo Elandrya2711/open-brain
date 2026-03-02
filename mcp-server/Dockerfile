@@ -7,8 +7,7 @@ WORKDIR /app
 COPY package.json ./
 
 # Install all dependencies (including devDependencies for build)
-# Force devDependencies installation even if NODE_ENV=production
-RUN npm install --no-audit --include=dev
+RUN npm install --no-audit
 
 # Copy source
 COPY src ./src
