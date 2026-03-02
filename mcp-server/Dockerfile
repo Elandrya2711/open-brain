@@ -4,16 +4,17 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Copy package files
-COPY package.json package-lock.json* ./
+COPY package.json ./
 
 # Install all dependencies (including devDependencies for build)
-RUN npm ci --no-audit || npm install
+# npm install is safer than npm ci when package-lock.json doesn't exist
+RUN npm install --no-audit
 
 # Copy source
 COPY src ./src
 COPY tsconfig.json ./
 
-# Build
+# Build TypeScript
 RUN npm run build
 
 # Runtime stage
