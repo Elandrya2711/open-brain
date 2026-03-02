@@ -14,8 +14,8 @@ RUN npm install --no-audit
 COPY src ./src
 COPY tsconfig.json ./
 
-# Build TypeScript
-RUN npm run build
+# Build TypeScript - use npx to ensure typescript is found
+RUN npx --yes tsc
 
 # Runtime stage
 FROM node:20-alpine
