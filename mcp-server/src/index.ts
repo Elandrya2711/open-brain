@@ -122,109 +122,46 @@ function startHttpServer() {
     res.json({ status: 'ok' });
   });
 
-  // Direct MCP request handler (bypasses StreamableHTTPServerTransport header validation)
-  // Handles JSON-RPC 2.0 requests directly
-  app.post('/mcp', authMiddleware, async (req, res) => {
+  // Auto-fix Accept header for StreamableHTTPServerTransport
+  // This ensures Claude Code can connect without issues
+  app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path === '/mcp') {
+      const accept = req.headers.accept || '';
+      // Ensure both types are present for MCP HTTP protocol
+      if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
+        console.error('[HTTP Server] Fixing Accept header for MCP. Original:', accept || 'empty');
+        req.headers.accept = 'application/json, text/event-stream';
+      }
+    }
+    next();
+  });
+
+  // MCP endpoint using StreamableHTTPServerTransport (supports Claude Code)
+  app.all('/mcp', authMiddleware, async (req, res) => {
     try {
-      console.error('[HTTP Server] Direct MCP request received:', {
+      console.error('[HTTP Server] MCP request:', {
         method: req.method,
-        rpcMethod: req.body?.method,
-        toolName: req.body?.params?.name,
+        path: req.path,
+        contentType: req.headers['content-type'],
       });
 
-      // Parse the JSON-RPC request
-      const body = req.body;
-      if (!body || !body.method) {
-        return res.status(400).json({
-          jsonrpc: '2.0',
-          error: { code: -32700, message: 'Parse error' },
-          id: body?.id || null,
-        });
-      }
-
-      // Create a fresh Server instance per request
+      // Create fresh Server instance
       const server = createMcpServer();
       registerToolHandlers(server);
 
-      // Direct handler for tools/call without transport layer validation
-      if (body.method === 'tools/call') {
-        const tool = getTool(body.params?.name);
-        if (!tool) {
-          return res.json({
-            jsonrpc: '2.0',
-            error: {
-              code: -32601,
-              message: `Unknown tool: ${body.params?.name}`,
-            },
-            id: body.id,
-          });
-        }
-
-        try {
-          console.error('[HTTP Server] Calling tool:', body.params.name, 'with input:', body.params.arguments);
-          const result = await tool.handler(body.params.arguments || {});
-          console.error('[HTTP Server] Tool result:', result);
-
-          res.json({
-            jsonrpc: '2.0',
-            result: {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify(result),
-                },
-              ],
-            },
-            id: body.id,
-          });
-        } catch (toolError) {
-          const message = toolError instanceof Error ? toolError.message : 'Unknown error';
-          console.error('[HTTP Server] Tool error:', message);
-          res.json({
-            jsonrpc: '2.0',
-            error: {
-              code: -32000,
-              message: message,
-            },
-            id: body.id,
-          });
-        }
-        return;
-      }
-
-      // Handle other MCP methods using the standard request/response
-      if (body.method === 'tools/list') {
-        return res.json({
-          jsonrpc: '2.0',
-          result: {
-            tools: tools.map(tool => ({
-              name: tool.name,
-              description: tool.description,
-              inputSchema: tool.inputSchema,
-            })),
-          },
-          id: body.id,
-        });
-      }
-
-      // Unsupported method
-      res.status(400).json({
-        jsonrpc: '2.0',
-        error: { code: -32601, message: 'Method not found' },
-        id: body.id,
-      });
+      // Use StreamableHTTPServerTransport (now with fixed Accept header)
+      const transport = new StreamableHTTPServerTransport();
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[HTTP Server] Error handling MCP request:', message, error);
+      console.error('[HTTP Server] MCP error:', message);
       if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: '2.0',
-          error: { code: -32000, message },
-          id: req.body?.id || null,
-        });
+        res.status(500).json({ error: message });
       }
     }
   });
+
 
   app.listen(PORT, '0.0.0.0', () => {
     console.error(`[HTTP Server] Listening on port ${PORT}`);
