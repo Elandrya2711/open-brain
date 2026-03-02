@@ -5,6 +5,7 @@ import {
   TextContent,
 } from '@modelcontextprotocol/sdk/types.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express from 'express';
 import { tools, getTool } from './tools/index.js';
 import { closePool } from './db.js';
@@ -116,37 +117,14 @@ function startHttpServer() {
     res.json({ status: 'ok' });
   });
 
-  // List tools endpoint
-  app.get('/mcp/tools', authMiddleware, (req, res) => {
-    res.json({
-      tools: tools.map(tool => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-      })),
+  // Standard MCP HTTP transport endpoint
+  app.post('/mcp', authMiddleware, async (req, res) => {
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // Stateless - each request is independent
     });
-  });
 
-  // Call tool endpoint
-  app.post('/mcp/call-tool', authMiddleware, async (req, res) => {
-    const { name, arguments: toolInput } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ error: 'Tool name is required' });
-    }
-
-    const tool = getTool(name);
-    if (!tool) {
-      return res.status(404).json({ error: `Unknown tool: ${name}` });
-    }
-
-    try {
-      const result = await tool.handler(toolInput || {});
-      res.json(result);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      res.status(500).json({ error: message });
-    }
+    await server.connect(transport);
+    await transport.handleRequest(req, res);
   });
 
   app.listen(PORT, '0.0.0.0', () => {
