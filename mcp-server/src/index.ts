@@ -122,23 +122,106 @@ function startHttpServer() {
     res.json({ status: 'ok' });
   });
 
-  // Standard MCP HTTP transport endpoint (stateless, fresh instance per request)
-  app.all('/mcp', authMiddleware, async (req, res) => {
+  // Direct MCP request handler (bypasses StreamableHTTPServerTransport header validation)
+  // Handles JSON-RPC 2.0 requests directly
+  app.post('/mcp', authMiddleware, async (req, res) => {
     try {
-      // Fresh instance per request: create Server + Transport pair
+      console.error('[HTTP Server] Direct MCP request received:', {
+        method: req.method,
+        rpcMethod: req.body?.method,
+        toolName: req.body?.params?.name,
+      });
+
+      // Parse the JSON-RPC request
+      const body = req.body;
+      if (!body || !body.method) {
+        return res.status(400).json({
+          jsonrpc: '2.0',
+          error: { code: -32700, message: 'Parse error' },
+          id: body?.id || null,
+        });
+      }
+
+      // Create a fresh Server instance per request
       const server = createMcpServer();
       registerToolHandlers(server);
 
-      // Stateless mode: no sessionIdGenerator, no session tracking
-      const transport = new StreamableHTTPServerTransport();
+      // Direct handler for tools/call without transport layer validation
+      if (body.method === 'tools/call') {
+        const tool = getTool(body.params?.name);
+        if (!tool) {
+          return res.json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32601,
+              message: `Unknown tool: ${body.params?.name}`,
+            },
+            id: body.id,
+          });
+        }
 
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+        try {
+          console.error('[HTTP Server] Calling tool:', body.params.name, 'with input:', body.params.arguments);
+          const result = await tool.handler(body.params.arguments || {});
+          console.error('[HTTP Server] Tool result:', result);
+
+          res.json({
+            jsonrpc: '2.0',
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(result),
+                },
+              ],
+            },
+            id: body.id,
+          });
+        } catch (toolError) {
+          const message = toolError instanceof Error ? toolError.message : 'Unknown error';
+          console.error('[HTTP Server] Tool error:', message);
+          res.json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: message,
+            },
+            id: body.id,
+          });
+        }
+        return;
+      }
+
+      // Handle other MCP methods using the standard request/response
+      if (body.method === 'tools/list') {
+        return res.json({
+          jsonrpc: '2.0',
+          result: {
+            tools: tools.map(tool => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            })),
+          },
+          id: body.id,
+        });
+      }
+
+      // Unsupported method
+      res.status(400).json({
+        jsonrpc: '2.0',
+        error: { code: -32601, message: 'Method not found' },
+        id: body.id,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[HTTP Server] Error handling MCP request:', message);
+      console.error('[HTTP Server] Error handling MCP request:', message, error);
       if (!res.headersSent) {
-        res.status(500).json({ error: message });
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message },
+          id: req.body?.id || null,
+        });
       }
     }
   });

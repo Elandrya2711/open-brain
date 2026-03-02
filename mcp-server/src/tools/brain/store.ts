@@ -29,7 +29,14 @@ export const tool = {
     type?: 'qa' | 'chat' | 'note';
     summary?: string;
   }) => {
+    console.error('[store_memory] Handler called with:', {
+      contentLength: input.content?.length,
+      type: input.type,
+      hasSummary: !!input.summary,
+    });
+
     if (!input.content || typeof input.content !== 'string') {
+      console.error('[store_memory] Validation failed: content missing or not string');
       return {
         success: false,
         error: 'Content is required and must be a string',
@@ -37,6 +44,7 @@ export const tool = {
     }
 
     if (input.content.trim().length === 0) {
+      console.error('[store_memory] Validation failed: content is empty');
       return {
         success: false,
         error: 'Content cannot be empty',
@@ -44,8 +52,12 @@ export const tool = {
     }
 
     try {
+      console.error('[store_memory] Generating embedding...');
       const embedding = await generateEmbedding(input.content);
+      console.error('[store_memory] Embedding generated, size:', embedding.length);
+
       const type = input.type || 'note';
+      console.error('[store_memory] Inserting into database...');
       const id = await insertMemory(
         input.content,
         embedding,
@@ -53,6 +65,7 @@ export const tool = {
         'claude-code',
         input.summary
       );
+      console.error('[store_memory] Memory inserted successfully with id:', id);
 
       return {
         success: true,
@@ -61,6 +74,7 @@ export const tool = {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error('[store_memory] Error:', message, error);
       return {
         success: false,
         error: `Failed to store memory: ${message}`,

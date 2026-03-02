@@ -1,7 +1,10 @@
 import { Pool } from 'pg';
 
+const dbUrl = process.env.DATABASE_URL;
+console.error('[db] Pool initialized with DATABASE_URL:', dbUrl ? `${dbUrl.substring(0, 40)}...` : 'NOT SET');
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl,
 });
 
 export interface Memory {
@@ -29,6 +32,14 @@ export async function insertMemory(
   source: string = 'claude-code',
   summary?: string
 ): Promise<string> {
+  console.error('[db.insertMemory] Called with:', {
+    contentLength: content?.length,
+    embeddingLength: embedding?.length,
+    type,
+    source,
+    hasSummary: !!summary,
+  });
+
   const query = `
     INSERT INTO memories (content, embedding, type, source, summary)
     VALUES ($1, $2::vector, $3, $4, $5)
@@ -36,6 +47,7 @@ export async function insertMemory(
   `;
 
   try {
+    console.error('[db.insertMemory] Executing query...');
     const result = await pool.query(query, [
       content,
       JSON.stringify(embedding),
@@ -44,8 +56,12 @@ export async function insertMemory(
       summary || null,
     ]);
 
-    return result.rows[0].id;
+    const id = result.rows[0].id;
+    console.error('[db.insertMemory] Successfully inserted with id:', id);
+    return id;
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error('[db.insertMemory] Error:', errorMsg, error);
     if (error instanceof Error) {
       throw new Error(`Failed to insert memory: ${error.message}`);
     }
