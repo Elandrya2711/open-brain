@@ -13,15 +13,15 @@ export interface ToolDefinition {
     properties: Record<string, unknown>;
     required?: string[];
   };
-  handler: (input: unknown) => Promise<unknown>;
+  handler: (input: any) => Promise<any>;
 }
 
 export const tools: ToolDefinition[] = [
-  storeTool,
-  searchTool,
-  recentTool,
-  statsTool,
-  deleteTool,
+  storeTool as ToolDefinition,
+  searchTool as ToolDefinition,
+  recentTool as ToolDefinition,
+  statsTool as ToolDefinition,
+  deleteTool as ToolDefinition,
 ];
 
 export function getTool(name: string): ToolDefinition | undefined {
