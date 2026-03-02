@@ -6,6 +6,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { randomUUID } from 'crypto';
 import express from 'express';
 import { tools, getTool } from './tools/index.js';
 import { closePool } from './db.js';
@@ -13,80 +14,87 @@ import { closePool } from './db.js';
 const PORT = 3000;
 const API_KEY = process.env.OPEN_BRAIN_API_KEY;
 
-// Initialize MCP Server
-const server = new Server(
-  {
-    name: 'open-brain',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
+// Shared handler registration for any Server instance
+function registerToolHandlers(server: Server) {
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return {
+      tools: tools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      })),
+    };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async request => {
+    const toolName = request.params.name;
+    const toolInput = request.params.arguments;
+
+    const tool = getTool(toolName);
+    if (!tool) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: `Unknown tool: ${toolName}`,
+            }),
+          },
+        ],
+      };
+    }
+
+    try {
+      const result = await tool.handler(toolInput);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: message,
+            }),
+          },
+        ],
+      };
+    }
+  });
+}
+
+function createMcpServer(): Server {
+  return new Server(
+    {
+      name: 'open-brain',
+      version: '1.0.0',
     },
-  }
-);
-
-// Register list_tools handler
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: tools.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    })),
-  };
-});
-
-// Register call_tool handler
-server.setRequestHandler(CallToolRequestSchema, async request => {
-  const toolName = request.params.name;
-  const toolInput = request.params.arguments;
-
-  const tool = getTool(toolName);
-  if (!tool) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            error: `Unknown tool: ${toolName}`,
-          }),
-        },
-      ],
-    };
-  }
-
-  try {
-    const result = await tool.handler(toolInput);
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify(result),
-        },
-      ],
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            error: message,
-          }),
-        },
-      ],
-    };
-  }
-});
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+}
 
 // Start MCP server with stdio transport
 async function startMcpServer() {
+  const server = createMcpServer();
+  registerToolHandlers(server);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('[MCP Server] Connected via stdio transport');
 }
+
+// Session tracking: maps session ID -> { server, transport }
+const sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport }>();
 
 // HTTP Server for external clients (with Bearer token auth)
 function startHttpServer() {
@@ -117,82 +125,46 @@ function startHttpServer() {
     res.json({ status: 'ok' });
   });
 
-  // Standard MCP HTTP transport endpoint
-  app.post('/mcp', authMiddleware, async (req, res) => {
-    // Create a fresh server instance for this HTTP request
-    const httpServer = new Server(
-      {
-        name: 'open-brain',
-        version: '1.0.0',
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
-      }
-    );
+  // Standard MCP HTTP transport endpoint (handles POST for JSON-RPC, GET for SSE, DELETE for session close)
+  app.all('/mcp', authMiddleware, async (req, res) => {
+    // Check for existing session via Mcp-Session-Id header
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    let session = sessionId ? sessions.get(sessionId) : undefined;
 
-    // Register handlers on the HTTP server instance
-    httpServer.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: tools.map(tool => ({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-        })),
-      };
-    });
+    if (session) {
+      // Reuse existing session's transport
+      await session.transport.handleRequest(req, res, req.body);
+      return;
+    }
 
-    httpServer.setRequestHandler(CallToolRequestSchema, async request => {
-      const toolName = request.params.name;
-      const toolInput = request.params.arguments;
+    // For non-POST without a valid session, reject
+    if (req.method !== 'POST') {
+      res.status(400).json({ error: 'No valid session. Send an initialize request first.' });
+      return;
+    }
 
-      const tool = getTool(toolName);
-      if (!tool) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                error: `Unknown tool: ${toolName}`,
-              }),
-            },
-          ],
-        };
-      }
+    // New session: create Server + Transport pair
+    const server = createMcpServer();
+    registerToolHandlers(server);
 
-      try {
-        const result = await tool.handler(toolInput);
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify(result),
-            },
-          ],
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                error: message,
-              }),
-            },
-          ],
-        };
-      }
-    });
-
-    // Create transport and handle request
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // Stateless - each request is independent
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (newSessionId: string) => {
+        sessions.set(newSessionId, { server, transport });
+        console.error(`[HTTP Server] Session initialized: ${newSessionId}`);
+      },
     });
 
-    await httpServer.connect(transport);
-    await transport.handleRequest(req, res);
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid) {
+        sessions.delete(sid);
+        console.error(`[HTTP Server] Session closed: ${sid}`);
+      }
+    };
+
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
   });
 
   app.listen(PORT, '0.0.0.0', () => {
