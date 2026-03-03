@@ -1,4 +1,7 @@
 import { Pool } from 'pg';
+import pgMigrate from 'node-pg-migrate';
+import { fileURLToPath } from 'url';
+import path from 'path';
 
 // Build pool config from environment variables
 // Prefer individual config vars over DATABASE_URL to avoid URL-encoding issues
@@ -56,6 +59,29 @@ pool.on('error', (err) => {
 pool.on('connect', () => {
   console.error('[db] Connection pool connected successfully');
 });
+
+// Run node-pg-migrate migrations
+async function runMigrations() {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const migrationsDir = path.resolve(__dirname, '..', 'migrations');
+
+  console.error('[db.migrations] Running migrations from:', migrationsDir);
+
+  const client = await pool.connect();
+  try {
+    await pgMigrate({
+      dbClient: client,
+      dir: migrationsDir,
+      direction: 'up',
+      migrationsTable: 'pgmigrations',
+      log: (msg: string) => console.error('[db.migrations]', msg),
+    });
+    console.error('[db.migrations] Migrations complete');
+  } finally {
+    client.release();
+  }
+}
 
 // Auto-migration: Initialize schema if it doesn't exist
 async function initializeSchema() {
@@ -143,11 +169,13 @@ async function initializeSchema() {
   }
 }
 
-// Initialize schema on startup
-initializeSchema().catch(error => {
-  console.error('[db] Fatal: Schema initialization failed:', error);
-  process.exit(1);
-});
+// Initialize schema on startup: run migrations first, then legacy schema check
+runMigrations()
+  .then(() => initializeSchema())
+  .catch(error => {
+    console.error('[db] Fatal: Schema initialization failed:', error);
+    process.exit(1);
+  });
 
 export interface Memory {
   id: string;
@@ -342,6 +370,92 @@ export async function deleteMemory(id: string): Promise<boolean> {
       throw new Error(`Failed to delete memory: ${error.message}`);
     }
     throw error;
+  }
+}
+
+// --- Soul versioning ---
+
+export interface SoulVersion {
+  id: string;
+  content: string;
+  valid_from: string;
+  valid_until: string | null;
+}
+
+export async function getActiveSoul(at?: string): Promise<SoulVersion | null> {
+  let query: string;
+  let params: string[];
+
+  if (at) {
+    query = `
+      SELECT id, content, valid_from, valid_until
+      FROM soul_versions
+      WHERE valid_from <= $1 AND (valid_until IS NULL OR valid_until > $1)
+      LIMIT 1
+    `;
+    params = [at];
+  } else {
+    query = `
+      SELECT id, content, valid_from, valid_until
+      FROM soul_versions
+      WHERE valid_until IS NULL
+      LIMIT 1
+    `;
+    params = [];
+  }
+
+  try {
+    const result = await pool.query(query, params);
+    if (result.rows.length === 0) return null;
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      content: row.content,
+      valid_from: row.valid_from,
+      valid_until: row.valid_until,
+    };
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Failed to get soul: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+export async function syncSoul(content: string): Promise<SoulVersion> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Close the currently active version
+    await client.query(
+      'UPDATE soul_versions SET valid_until = NOW() WHERE valid_until IS NULL'
+    );
+
+    // Insert new active version
+    const result = await client.query(
+      'INSERT INTO soul_versions (content) VALUES ($1) RETURNING id, content, valid_from, valid_until',
+      [content]
+    );
+
+    await client.query('COMMIT');
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      content: row.content,
+      valid_from: row.valid_from,
+      valid_until: row.valid_until,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error instanceof Error) {
+      throw new Error(`Failed to sync soul: ${error.message}`);
+    }
+    throw error;
+  } finally {
+    client.release();
   }
 }
 

@@ -4,6 +4,8 @@ import { tool as searchTool } from './brain/search.js';
 import { tool as recentTool } from './brain/recent.js';
 import { tool as statsTool } from './brain/stats.js';
 import { tool as deleteTool } from './brain/delete.js';
+import { tool as getSoulTool } from './soul/get_soul.js';
+import { tool as syncSoulTool } from './soul/sync_soul.js';
 
 export interface ToolDefinition {
   name: string;
@@ -22,6 +24,8 @@ export const tools: ToolDefinition[] = [
   recentTool as ToolDefinition,
   statsTool as ToolDefinition,
   deleteTool as ToolDefinition,
+  getSoulTool as ToolDefinition,
+  syncSoulTool as ToolDefinition,
 ];
 
 export function getTool(name: string): ToolDefinition | undefined {

@@ -1,17 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { tool } from './delete.js';
-import * as db from '../../__mocks__/db.js';
 
-vi.mock('../../db.js', () => db);
+vi.mock('../../db.js');
+
+import { tool } from './delete.js';
+import { deleteMemory } from '../../db.js';
+
+const mockedDeleteMemory = vi.mocked(deleteMemory);
 
 describe('delete_memory tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedDeleteMemory.mockResolvedValue(true);
   });
 
   it('should delete memory successfully', async () => {
-    db.deleteMemory.mockResolvedValueOnce(true);
-
     const result = await tool.handler({
       id: 'test-id',
     });
@@ -20,11 +22,11 @@ describe('delete_memory tool', () => {
       success: true,
       message: 'Memory test-id deleted successfully',
     });
-    expect(db.deleteMemory).toHaveBeenCalledWith('test-id');
+    expect(mockedDeleteMemory).toHaveBeenCalledWith('test-id');
   });
 
   it('should return error when memory not found', async () => {
-    db.deleteMemory.mockResolvedValueOnce(false);
+    mockedDeleteMemory.mockResolvedValueOnce(false);
 
     const result = await tool.handler({
       id: 'nonexistent-id',
@@ -57,7 +59,7 @@ describe('delete_memory tool', () => {
   });
 
   it('should handle database errors', async () => {
-    db.deleteMemory.mockRejectedValueOnce(new Error('DB Error'));
+    mockedDeleteMemory.mockRejectedValueOnce(new Error('DB Error'));
 
     const result = await tool.handler({
       id: 'test-id',

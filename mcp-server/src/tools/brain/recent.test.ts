@@ -1,18 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { tool } from './recent.js';
-import * as db from '../../__mocks__/db.js';
 
-vi.mock('../../db.js', () => db);
+vi.mock('../../db.js');
+
+import { tool } from './recent.js';
+import { getRecentMemories } from '../../db.js';
+
+const mockedGetRecentMemories = vi.mocked(getRecentMemories);
 
 describe('list_recent tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedGetRecentMemories.mockResolvedValue([]);
   });
 
   it('should list recent memories with default days', async () => {
     const result = await tool.handler({});
 
-    expect(db.getRecentMemories).toHaveBeenCalledWith(7);
+    expect(mockedGetRecentMemories).toHaveBeenCalledWith(7);
     expect(result).toEqual({
       success: true,
       count: 0,
@@ -26,15 +30,17 @@ describe('list_recent tool', () => {
       days: 30,
     });
 
-    expect(db.getRecentMemories).toHaveBeenCalledWith(30);
+    expect(mockedGetRecentMemories).toHaveBeenCalledWith(30);
   });
 
   it('should enforce minimum days value', async () => {
     await tool.handler({
-      days: 0,
+      days: -5,
     });
 
-    expect(db.getRecentMemories).toHaveBeenCalledWith(1);
+    // Math.max(-5 || 7, 1) = Math.max(7, 1) = 7 (falsy 0 falls back to default 7)
+    // Using -5 which is truthy but less than 1, so Math.max(-5, 1) = 1
+    expect(mockedGetRecentMemories).toHaveBeenCalledWith(1);
   });
 
   it('should return formatted memory list', async () => {
@@ -51,7 +57,7 @@ describe('list_recent tool', () => {
       },
     ];
 
-    db.getRecentMemories.mockResolvedValueOnce(mockMemories);
+    mockedGetRecentMemories.mockResolvedValueOnce(mockMemories);
 
     const result = await tool.handler({
       days: 7,
@@ -69,7 +75,7 @@ describe('list_recent tool', () => {
   });
 
   it('should handle database errors', async () => {
-    db.getRecentMemories.mockRejectedValueOnce(new Error('DB Error'));
+    mockedGetRecentMemories.mockRejectedValueOnce(new Error('DB Error'));
 
     const result = await tool.handler({
       days: 7,
