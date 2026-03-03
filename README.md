@@ -39,7 +39,7 @@ MCP Server (stdio transport)
 
 ```bash
 # Clone/setup the project
-cd /home/thilo/Projects/AiBrain
+cd open-brain
 
 # Create .env from template
 cp .env.example .env
@@ -61,7 +61,7 @@ docker compose logs -f mcp-server
 docker compose logs -f postgres
 
 # Verify PostgreSQL is ready
-docker exec aibrain-postgres pg_isready -U openbrain
+docker compose exec postgres pg_isready -U openbrain
 ```
 
 ### Using in Claude Code
@@ -72,8 +72,8 @@ The MCP server is configured in `~/.claude/claude.json`. Once Docker is running:
 /remember
 # Stores last Q&A pair
 
-/remember my fears about leasing
-# Extracts and stores only relevant fears from conversation
+/remember key decisions from this conversation
+# Extracts and stores only relevant decisions from conversation
 
 /remember all decisions
 # Extracts all decisions made in this chat
@@ -328,26 +328,28 @@ OPEN_BRAIN_API_KEY=random-secure-key-here
 NODE_ENV=production
 ```
 
-## Deployment to Coolify
+## Deployment
 
-1. Create a new service in Coolify from the Docker Compose file
-2. Set all environment variables as secrets
-3. Configure the health check: `GET http://localhost:3000/health`
+This project can be deployed on any Docker-compatible platform (VPS, Coolify, Portainer, etc.):
+
+1. Clone the repository and configure `.env`
+2. Set all environment variables as secrets on your platform
+3. Configure health check: `GET http://localhost:3000/health`
 4. Set restart policy: `always`
-5. Enable volume persistence for PostgreSQL
+5. Enable volume persistence for PostgreSQL data
 
 ## Troubleshooting
 
 ### MCP Server not connecting
 ```bash
 # Check if container is running
-docker ps | grep aibrain
+docker compose ps
 
 # Check logs
-docker logs aibrain-mcp-server-1
+docker compose logs mcp-server
 
 # Verify schema was initialized
-docker exec aibrain-postgres psql -U openbrain -d openbrain -c "\d memories"
+docker compose exec postgres psql -U openbrain -d openbrain -c "\d memories"
 ```
 
 ### Embedding generation fails

@@ -6,7 +6,7 @@ import path from 'path';
 // --- Configuration ---
 const SSH_HOST = process.env.VM_SSH_HOST;
 const SSH_PORT = parseInt(process.env.VM_SSH_PORT || '22', 10);
-const SSH_USER = process.env.VM_SSH_USER || 'mako';
+const SSH_USER = process.env.VM_SSH_USER || 'root';
 const SSH_KEY_ENV = process.env.VM_SSH_KEY?.replace(/\\n/g, '\n');
 
 const SSH_DATA_DIR = process.env.SSH_DATA_DIR || '/app/data/ssh';
