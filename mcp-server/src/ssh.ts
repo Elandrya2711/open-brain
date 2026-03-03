@@ -99,16 +99,108 @@ let client: Client | null = null;
 let connecting: Promise<Client> | null = null;
 
 /**
- * Normalize a private key to PKCS#8 PEM format.
- * Handles OpenSSH (`BEGIN OPENSSH PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`),
- * and PKCS#8 (`BEGIN PRIVATE KEY`) input formats.
+ * Convert a Node.js Ed25519 KeyObject to OpenSSH private key format.
+ * ssh2 cannot parse PKCS#8 Ed25519 keys, so we must use OpenSSH format.
  */
-function normalizePrivateKey(rawKey: string): string {
+function ed25519ToOpenSSH(keyObject: crypto.KeyObject): string {
+  const jwk = keyObject.export({ format: 'jwk' });
+  const privateBytes = Buffer.from(jwk.d!, 'base64url'); // 32 bytes
+  const publicBytes = Buffer.from(jwk.x!, 'base64url');  // 32 bytes
+
+  function writeString(data: Buffer | string): Buffer {
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(buf.length);
+    return Buffer.concat([len, buf]);
+  }
+
+  const pubKeyBlob = Buffer.concat([
+    writeString('ssh-ed25519'),
+    writeString(publicBytes),
+  ]);
+
+  const checkInt = crypto.randomBytes(4);
+  const privKeyData = Buffer.concat([
+    checkInt,
+    checkInt, // checkint2 must equal checkint1
+    writeString('ssh-ed25519'),
+    writeString(publicBytes),
+    writeString(Buffer.concat([privateBytes, publicBytes])), // 64 bytes
+    writeString(''), // comment
+  ]);
+
+  // Pad to block size (8 for no encryption)
+  const blockSize = 8;
+  const padLen = blockSize - (privKeyData.length % blockSize);
+  const padding = Buffer.alloc(padLen === blockSize ? 0 : padLen);
+  for (let i = 0; i < padding.length; i++) {
+    padding[i] = i + 1;
+  }
+
+  const fullKey = Buffer.concat([
+    Buffer.from('openssh-key-v1\0'),    // AUTH_MAGIC
+    writeString('none'),                 // ciphername
+    writeString('none'),                 // kdfname
+    writeString(''),                     // kdfoptions
+    Buffer.from([0, 0, 0, 1]),           // number of keys
+    writeString(pubKeyBlob),             // public key
+    writeString(Buffer.concat([privKeyData, padding])), // private key
+  ]);
+
+  const b64 = fullKey.toString('base64');
+  const lines = b64.match(/.{1,70}/g) || [];
+  return `-----BEGIN OPENSSH PRIVATE KEY-----\n${lines.join('\n')}\n-----END OPENSSH PRIVATE KEY-----\n`;
+}
+
+/**
+ * Normalize a private key to a format ssh2 can parse.
+ *
+ * ssh2 supports: OpenSSH format, PKCS#1 RSA, SEC1 EC.
+ * ssh2 does NOT support: PKCS#8 (for any key type).
+ * Node crypto supports: PKCS#8, PKCS#1, SEC1 — but NOT OpenSSH format.
+ *
+ * Strategy:
+ * - OpenSSH / PKCS#1 RSA / SEC1 EC → pass through (ssh2-native)
+ * - PKCS#8 → parse with Node crypto, re-export in ssh2-compatible format
+ */
+export function normalizePrivateKey(rawKey: string): string {
+  // Already in a format ssh2 handles natively — pass through
+  if (rawKey.includes('-----BEGIN OPENSSH PRIVATE KEY-----')) {
+    console.error('[ssh] Key is OpenSSH format — passing through');
+    return rawKey;
+  }
+  if (rawKey.includes('-----BEGIN RSA PRIVATE KEY-----')) {
+    console.error('[ssh] Key is PKCS#1 RSA — passing through');
+    return rawKey;
+  }
+  if (rawKey.includes('-----BEGIN EC PRIVATE KEY-----')) {
+    console.error('[ssh] Key is SEC1 EC — passing through');
+    return rawKey;
+  }
+
+  // PKCS#8 or other format — parse with Node crypto and convert
   try {
     const keyObject = crypto.createPrivateKey(rawKey);
-    const normalized = keyObject.export({ type: 'pkcs8', format: 'pem' }) as string;
-    console.error('[ssh] Private key normalized to PKCS#8 PEM format successfully');
-    return normalized;
+    const keyType = keyObject.asymmetricKeyType;
+
+    if (keyType === 'ed25519' || keyType === 'ed448') {
+      console.error(`[ssh] Converting ${keyType} PKCS#8 to OpenSSH format`);
+      return ed25519ToOpenSSH(keyObject);
+    }
+
+    if (keyType === 'rsa') {
+      console.error('[ssh] Converting RSA PKCS#8 to PKCS#1');
+      return keyObject.export({ type: 'pkcs1', format: 'pem' }) as string;
+    }
+
+    if (keyType === 'ec') {
+      console.error('[ssh] Converting EC PKCS#8 to SEC1');
+      return keyObject.export({ type: 'sec1', format: 'pem' }) as string;
+    }
+
+    // Unknown key type — return as-is and hope for the best
+    console.error(`[ssh] Unknown key type '${keyType}' — passing through as-is`);
+    return rawKey;
   } catch (err) {
     console.error('[ssh] Warning: Could not normalize private key format:', (err as Error).message);
     console.error('[ssh] Passing key to ssh2 as-is (may fail if format is unsupported)');
