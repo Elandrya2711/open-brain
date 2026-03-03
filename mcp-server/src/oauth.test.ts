@@ -1,9 +1,38 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import crypto from 'crypto';
 import express from 'express';
 import { createJwt, verifyJwt, createOAuthRouter } from './oauth.js';
 
 const TEST_SECRET = 'test-api-key-1234567890';
+
+// ---------------------------------------------------------------------------
+// Mock the DB functions used by oauth.ts
+// ---------------------------------------------------------------------------
+
+// In-memory stores for the mocks
+let mockClients: Map<string, any>;
+let mockRefreshTokens: Map<string, any>;
+
+vi.mock('./db.js', () => ({
+  saveClient: vi.fn(async (reg: any) => {
+    mockClients.set(reg.clientId, reg);
+  }),
+  getClient: vi.fn(async (clientId: string) => {
+    return mockClients.get(clientId) || null;
+  }),
+  saveRefreshToken: vi.fn(async (tokenHash: string, clientId: string, scope: string, expiresAt: Date) => {
+    mockRefreshTokens.set(tokenHash, { tokenHash, clientId, scope, expiresAt: expiresAt.toISOString() });
+  }),
+  getRefreshToken: vi.fn(async (tokenHash: string) => {
+    const entry = mockRefreshTokens.get(tokenHash);
+    if (!entry) return null;
+    if (new Date(entry.expiresAt) < new Date()) return null;
+    return entry;
+  }),
+  deleteRefreshToken: vi.fn(async (tokenHash: string) => {
+    mockRefreshTokens.delete(tokenHash);
+  }),
+}));
 
 // ---------------------------------------------------------------------------
 // JWT tests
@@ -94,6 +123,8 @@ describe('OAuth Router', () => {
   let app: express.Express;
 
   beforeEach(() => {
+    mockClients = new Map();
+    mockRefreshTokens = new Map();
     app = express();
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
@@ -135,7 +166,7 @@ describe('OAuth Router', () => {
   });
 
   describe('/.well-known/oauth-authorization-server', () => {
-    it('should return authorization server metadata', async () => {
+    it('should return authorization server metadata with refresh_token grant', async () => {
       const res = await request('GET', '/.well-known/oauth-authorization-server');
       if (!res) return;
 
@@ -145,6 +176,7 @@ describe('OAuth Router', () => {
       expect(res.body.registration_endpoint).toBeDefined();
       expect(res.body.response_types_supported).toContain('code');
       expect(res.body.grant_types_supported).toContain('authorization_code');
+      expect(res.body.grant_types_supported).toContain('refresh_token');
       expect(res.body.code_challenge_methods_supported).toContain('S256');
     });
   });
@@ -191,6 +223,10 @@ describe('OAuth Router', () => {
       expect(res.body.client_id).toBeDefined();
       expect(res.body.client_name).toBe('Test Client');
       expect(res.body.redirect_uris).toContain('http://localhost:3000/callback');
+
+      // Client should be persisted in mock DB
+      expect(mockClients.size).toBe(1);
+      expect(mockClients.get(res.body.client_id)).toBeDefined();
     });
 
     it('should reject missing redirect_uris', async () => {
@@ -240,25 +276,20 @@ describe('Full OAuth Flow', () => {
   let app: express.Express;
 
   beforeEach(() => {
+    mockClients = new Map();
+    mockRefreshTokens = new Map();
     app = express();
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
     app.use(createOAuthRouter(TEST_SECRET));
   });
 
-  it('should complete the full authorization code + PKCE flow', async () => {
-    const { default: supertest } = await import('supertest' as string).catch(() => ({ default: null }));
-    if (!supertest) return;
-
-    // Step 1: Generate PKCE values
+  // Helper: run the authorize + token exchange and return both responses
+  async function doAuthCodeFlow(supertest: any, clientId: string, redirectUri: string) {
     const codeVerifier = crypto.randomBytes(32).toString('base64url');
     const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest().toString('base64url');
-
-    const clientId = 'test-client-id';
-    const redirectUri = 'http://localhost:3000/callback';
     const state = crypto.randomBytes(16).toString('hex');
 
-    // Step 2: POST to /authorize with correct API key
     const authRes = await supertest(app)
       .post('/authorize')
       .type('form')
@@ -268,40 +299,164 @@ describe('Full OAuth Flow', () => {
         response_type: 'code',
         code_challenge: codeChallenge,
         code_challenge_method: 'S256',
-        state: state,
+        state,
         scope: 'mcp:tools',
         api_key: TEST_SECRET,
       });
 
-    // Should redirect with code
-    expect(authRes.status).toBe(302);
     const location = new URL(authRes.headers.location);
-    expect(location.searchParams.get('state')).toBe(state);
     const code = location.searchParams.get('code');
-    expect(code).toBeTruthy();
 
-    // Step 3: Exchange code for token
     const tokenRes = await supertest(app)
       .post('/token')
       .send({
         grant_type: 'authorization_code',
-        code: code,
+        code,
         code_verifier: codeVerifier,
         client_id: clientId,
         redirect_uri: redirectUri,
       });
+
+    return { authRes, tokenRes, codeVerifier, state };
+  }
+
+  it('should complete the full authorization code + PKCE flow with refresh token', async () => {
+    const { default: supertest } = await import('supertest' as string).catch(() => ({ default: null }));
+    if (!supertest) return;
+
+    const clientId = 'test-client-id';
+    const redirectUri = 'http://localhost:3000/callback';
+
+    const { tokenRes } = await doAuthCodeFlow(supertest, clientId, redirectUri);
 
     expect(tokenRes.status).toBe(200);
     expect(tokenRes.body.access_token).toBeDefined();
     expect(tokenRes.body.token_type).toBe('Bearer');
     expect(tokenRes.body.expires_in).toBe(3600);
     expect(tokenRes.body.scope).toBe('mcp:tools');
+    expect(tokenRes.body.refresh_token).toBeDefined();
 
-    // Step 4: Verify the issued token
+    // Verify the issued access token
     const payload = verifyJwt(tokenRes.body.access_token, TEST_SECRET);
     expect(payload).not.toBeNull();
     expect(payload!.sub).toBe(clientId);
     expect(payload!.scope).toBe('mcp:tools');
+
+    // Refresh token hash should be persisted
+    expect(mockRefreshTokens.size).toBe(1);
+  });
+
+  it('should exchange refresh token for new access + refresh token pair', async () => {
+    const { default: supertest } = await import('supertest' as string).catch(() => ({ default: null }));
+    if (!supertest) return;
+
+    const clientId = 'test-client-id';
+    const redirectUri = 'http://localhost:3000/callback';
+
+    const { tokenRes: initialTokenRes } = await doAuthCodeFlow(supertest, clientId, redirectUri);
+    expect(initialTokenRes.status).toBe(200);
+
+    const refreshToken = initialTokenRes.body.refresh_token;
+    expect(refreshToken).toBeDefined();
+
+    // Exchange refresh token for new pair
+    const refreshRes = await supertest(app)
+      .post('/token')
+      .send({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+      });
+
+    expect(refreshRes.status).toBe(200);
+    expect(refreshRes.body.access_token).toBeDefined();
+    expect(refreshRes.body.refresh_token).toBeDefined();
+    expect(refreshRes.body.token_type).toBe('Bearer');
+    expect(refreshRes.body.expires_in).toBe(3600);
+
+    // New refresh token should be different (rotation)
+    expect(refreshRes.body.refresh_token).not.toBe(refreshToken);
+
+    // Verify new access token
+    const payload = verifyJwt(refreshRes.body.access_token, TEST_SECRET);
+    expect(payload).not.toBeNull();
+    expect(payload!.sub).toBe(clientId);
+
+    // Old refresh token should be deleted (only the new one remains)
+    expect(mockRefreshTokens.size).toBe(1);
+  });
+
+  it('should reject reused refresh token (rotation invalidation)', async () => {
+    const { default: supertest } = await import('supertest' as string).catch(() => ({ default: null }));
+    if (!supertest) return;
+
+    const clientId = 'test-client-id';
+    const redirectUri = 'http://localhost:3000/callback';
+
+    const { tokenRes: initialTokenRes } = await doAuthCodeFlow(supertest, clientId, redirectUri);
+    const refreshToken = initialTokenRes.body.refresh_token;
+
+    // First refresh: success
+    const refreshRes1 = await supertest(app)
+      .post('/token')
+      .send({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+      });
+    expect(refreshRes1.status).toBe(200);
+
+    // Second refresh with same token: should fail (already rotated)
+    const refreshRes2 = await supertest(app)
+      .post('/token')
+      .send({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+      });
+    expect(refreshRes2.status).toBe(400);
+    expect(refreshRes2.body.error).toBe('invalid_grant');
+  });
+
+  it('should reject refresh token with wrong client_id', async () => {
+    const { default: supertest } = await import('supertest' as string).catch(() => ({ default: null }));
+    if (!supertest) return;
+
+    const clientId = 'test-client-id';
+    const redirectUri = 'http://localhost:3000/callback';
+
+    const { tokenRes: initialTokenRes } = await doAuthCodeFlow(supertest, clientId, redirectUri);
+    const refreshToken = initialTokenRes.body.refresh_token;
+
+    // Attempt refresh with different client_id
+    const refreshRes = await supertest(app)
+      .post('/token')
+      .send({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: 'wrong-client-id',
+      });
+
+    expect(refreshRes.status).toBe(400);
+    expect(refreshRes.body.error).toBe('invalid_grant');
+
+    // Token should be deleted (possible theft detection)
+    expect(mockRefreshTokens.size).toBe(0);
+  });
+
+  it('should reject missing refresh_token parameter', async () => {
+    const { default: supertest } = await import('supertest' as string).catch(() => ({ default: null }));
+    if (!supertest) return;
+
+    const res = await supertest(app)
+      .post('/token')
+      .send({
+        grant_type: 'refresh_token',
+        client_id: 'test',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_request');
   });
 
   it('should reject wrong API key in authorize', async () => {

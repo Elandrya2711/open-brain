@@ -459,6 +459,100 @@ export async function syncSoul(content: string): Promise<SoulVersion> {
   }
 }
 
+// --- OAuth persistence ---
+
+export interface OAuthClient {
+  clientId: string;
+  clientName?: string;
+  redirectUris: string[];
+  grantTypes: string[];
+  responseTypes: string[];
+  tokenEndpointAuthMethod: string;
+  createdAt: string;
+}
+
+export async function saveClient(registration: {
+  clientId: string;
+  clientName?: string;
+  redirectUris: string[];
+  grantTypes: string[];
+  responseTypes: string[];
+  tokenEndpointAuthMethod: string;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO oauth_clients (client_id, client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (client_id) DO NOTHING`,
+    [
+      registration.clientId,
+      registration.clientName || null,
+      registration.redirectUris,
+      registration.grantTypes,
+      registration.responseTypes,
+      registration.tokenEndpointAuthMethod,
+    ],
+  );
+}
+
+export async function getClient(clientId: string): Promise<OAuthClient | null> {
+  const result = await pool.query(
+    `SELECT client_id, client_name, redirect_uris, grant_types, response_types,
+            token_endpoint_auth_method, created_at
+     FROM oauth_clients WHERE client_id = $1`,
+    [clientId],
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    clientId: row.client_id,
+    clientName: row.client_name || undefined,
+    redirectUris: row.redirect_uris,
+    grantTypes: row.grant_types,
+    responseTypes: row.response_types,
+    tokenEndpointAuthMethod: row.token_endpoint_auth_method,
+    createdAt: row.created_at,
+  };
+}
+
+export async function saveRefreshToken(
+  tokenHash: string,
+  clientId: string,
+  scope: string,
+  expiresAt: Date,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO oauth_refresh_tokens (token_hash, client_id, scope, expires_at)
+     VALUES ($1, $2, $3, $4)`,
+    [tokenHash, clientId, scope, expiresAt.toISOString()],
+  );
+}
+
+export async function getRefreshToken(tokenHash: string): Promise<{
+  tokenHash: string;
+  clientId: string;
+  scope: string;
+  expiresAt: string;
+} | null> {
+  const result = await pool.query(
+    `SELECT token_hash, client_id, scope, expires_at
+     FROM oauth_refresh_tokens
+     WHERE token_hash = $1 AND expires_at > NOW()`,
+    [tokenHash],
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    tokenHash: row.token_hash,
+    clientId: row.client_id,
+    scope: row.scope,
+    expiresAt: row.expires_at,
+  };
+}
+
+export async function deleteRefreshToken(tokenHash: string): Promise<void> {
+  await pool.query('DELETE FROM oauth_refresh_tokens WHERE token_hash = $1', [tokenHash]);
+}
+
 export async function closePool(): Promise<void> {
   await pool.end();
 }

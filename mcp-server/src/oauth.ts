@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
+import { saveClient, getClient, saveRefreshToken, getRefreshToken, deleteRefreshToken } from './db.js';
 
 // ---------------------------------------------------------------------------
 // JWT helpers (HMAC-SHA256, no external dependency)
@@ -75,31 +76,22 @@ interface AuthCodeEntry {
   expiresAt: number;
 }
 
-interface ClientRegistration {
-  clientId: string;
-  clientName?: string;
-  redirectUris: string[];
-  grantTypes: string[];
-  responseTypes: string[];
-  tokenEndpointAuthMethod: string;
-  registeredAt: number;
-}
-
 const authCodes = new Map<string, AuthCodeEntry>();
-const clients = new Map<string, ClientRegistration>();
 
-// Periodic cleanup of expired entries (every 5 minutes)
+// Periodic cleanup of expired auth codes (every 5 minutes)
 setInterval(() => {
   const now = Date.now();
   for (const [code, entry] of authCodes) {
     if (now > entry.expiresAt) authCodes.delete(code);
   }
-  // Clean up client registrations older than 24h
-  const dayAgo = now - 24 * 60 * 60 * 1000;
-  for (const [id, reg] of clients) {
-    if (reg.registeredAt < dayAgo) clients.delete(id);
-  }
 }, 5 * 60 * 1000);
+
+// Refresh token lifetime: 30 days
+const REFRESH_TOKEN_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
 
 // ---------------------------------------------------------------------------
 // PKCE helpers
@@ -238,7 +230,7 @@ export function createOAuthRouter(apiKey: string): Router {
       token_endpoint: `${baseUrl}/token`,
       registration_endpoint: `${baseUrl}/register`,
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256'],
       token_endpoint_auth_methods_supported: ['none'],
       scopes_supported: ['mcp:tools'],
@@ -348,76 +340,8 @@ export function createOAuthRouter(apiKey: string): Router {
     res.redirect(302, redirectUrl.toString());
   });
 
-  // ---- Token Endpoint ----
-  router.post('/token', (req: Request, res: Response) => {
-    const {
-      grant_type: grantType,
-      code,
-      code_verifier: codeVerifier,
-      client_id: clientId,
-      redirect_uri: redirectUri,
-    } = req.body;
-
-    if (grantType !== 'authorization_code') {
-      return res.status(400).json({
-        error: 'unsupported_grant_type',
-        error_description: 'Only authorization_code grant type is supported',
-      });
-    }
-
-    if (!code || !codeVerifier || !clientId) {
-      return res.status(400).json({
-        error: 'invalid_request',
-        error_description: 'Missing required parameters: code, code_verifier, client_id',
-      });
-    }
-
-    // Lookup authorization code
-    const codeEntry = authCodes.get(code);
-    if (!codeEntry) {
-      return res.status(400).json({
-        error: 'invalid_grant',
-        error_description: 'Invalid or expired authorization code',
-      });
-    }
-
-    // Delete code immediately (single use)
-    authCodes.delete(code);
-
-    // Check expiration
-    if (Date.now() > codeEntry.expiresAt) {
-      return res.status(400).json({
-        error: 'invalid_grant',
-        error_description: 'Authorization code has expired',
-      });
-    }
-
-    // Validate client_id matches
-    if (codeEntry.clientId !== clientId) {
-      return res.status(400).json({
-        error: 'invalid_grant',
-        error_description: 'client_id does not match',
-      });
-    }
-
-    // Validate redirect_uri if provided
-    if (redirectUri && codeEntry.redirectUri !== redirectUri) {
-      return res.status(400).json({
-        error: 'invalid_grant',
-        error_description: 'redirect_uri does not match',
-      });
-    }
-
-    // Validate PKCE code_verifier against stored code_challenge (S256)
-    const computedChallenge = computeS256Challenge(codeVerifier);
-    if (computedChallenge !== codeEntry.codeChallenge) {
-      return res.status(400).json({
-        error: 'invalid_grant',
-        error_description: 'PKCE verification failed',
-      });
-    }
-
-    // Issue JWT access token
+  // ---- Helper: issue access + refresh token pair ----
+  async function issueTokenPair(req: Request, res: Response, clientId: string, scope: string) {
     const baseUrl = getBaseUrl(req);
     const now = Math.floor(Date.now() / 1000);
     const expiresIn = 3600; // 1 hour
@@ -429,21 +353,136 @@ export function createOAuthRouter(apiKey: string): Router {
       exp: now + expiresIn,
       iat: now,
       jti: crypto.randomUUID(),
-      scope: codeEntry.scope,
+      scope,
     };
 
     const accessToken = createJwt(payload, apiKey);
+
+    // Generate refresh token and persist its hash
+    const refreshToken = crypto.randomBytes(32).toString('hex');
+    const refreshHash = hashToken(refreshToken);
+    const refreshExpiresAt = new Date(Date.now() + REFRESH_TOKEN_LIFETIME_MS);
+
+    await saveRefreshToken(refreshHash, clientId, scope, refreshExpiresAt);
 
     res.json({
       access_token: accessToken,
       token_type: 'Bearer',
       expires_in: expiresIn,
-      scope: codeEntry.scope,
+      scope,
+      refresh_token: refreshToken,
+    });
+  }
+
+  // ---- Token Endpoint ----
+  router.post('/token', async (req: Request, res: Response) => {
+    const {
+      grant_type: grantType,
+      code,
+      code_verifier: codeVerifier,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      refresh_token: refreshTokenValue,
+    } = req.body;
+
+    // ----- authorization_code grant -----
+    if (grantType === 'authorization_code') {
+      if (!code || !codeVerifier || !clientId) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Missing required parameters: code, code_verifier, client_id',
+        });
+      }
+
+      // Lookup authorization code
+      const codeEntry = authCodes.get(code);
+      if (!codeEntry) {
+        return res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'Invalid or expired authorization code',
+        });
+      }
+
+      // Delete code immediately (single use)
+      authCodes.delete(code);
+
+      // Check expiration
+      if (Date.now() > codeEntry.expiresAt) {
+        return res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'Authorization code has expired',
+        });
+      }
+
+      // Validate client_id matches
+      if (codeEntry.clientId !== clientId) {
+        return res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'client_id does not match',
+        });
+      }
+
+      // Validate redirect_uri if provided
+      if (redirectUri && codeEntry.redirectUri !== redirectUri) {
+        return res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'redirect_uri does not match',
+        });
+      }
+
+      // Validate PKCE code_verifier against stored code_challenge (S256)
+      const computedChallenge = computeS256Challenge(codeVerifier);
+      if (computedChallenge !== codeEntry.codeChallenge) {
+        return res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'PKCE verification failed',
+        });
+      }
+
+      return await issueTokenPair(req, res, clientId, codeEntry.scope);
+    }
+
+    // ----- refresh_token grant -----
+    if (grantType === 'refresh_token') {
+      if (!refreshTokenValue || !clientId) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Missing required parameters: refresh_token, client_id',
+        });
+      }
+
+      const tokenHash = hashToken(refreshTokenValue);
+      const stored = await getRefreshToken(tokenHash);
+
+      if (!stored) {
+        return res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'Invalid or expired refresh token',
+        });
+      }
+
+      if (stored.clientId !== clientId) {
+        // Possible token theft — delete the token
+        await deleteRefreshToken(tokenHash);
+        return res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'client_id does not match',
+        });
+      }
+
+      // Token rotation: delete old token, issue new pair
+      await deleteRefreshToken(tokenHash);
+      return await issueTokenPair(req, res, clientId, stored.scope);
+    }
+
+    return res.status(400).json({
+      error: 'unsupported_grant_type',
+      error_description: 'Supported grant types: authorization_code, refresh_token',
     });
   });
 
   // ---- Dynamic Client Registration (RFC 7591) ----
-  router.post('/register', (req: Request, res: Response) => {
+  router.post('/register', async (req: Request, res: Response) => {
     const {
       client_name: clientName,
       redirect_uris: redirectUris,
@@ -461,17 +500,16 @@ export function createOAuthRouter(apiKey: string): Router {
 
     const clientId = crypto.randomUUID();
 
-    const registration: ClientRegistration = {
+    const registration = {
       clientId,
       clientName: clientName || undefined,
       redirectUris,
       grantTypes: grantTypes || ['authorization_code'],
       responseTypes: responseTypes || ['code'],
       tokenEndpointAuthMethod: tokenEndpointAuthMethod || 'none',
-      registeredAt: Date.now(),
     };
 
-    clients.set(clientId, registration);
+    await saveClient(registration);
 
     res.status(201).json({
       client_id: clientId,
