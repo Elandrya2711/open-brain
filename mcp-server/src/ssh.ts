@@ -98,16 +98,36 @@ export function getPublicKey(): string | null {
 let client: Client | null = null;
 let connecting: Promise<Client> | null = null;
 
+/**
+ * Normalize a private key to PKCS#8 PEM format.
+ * Handles OpenSSH (`BEGIN OPENSSH PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`),
+ * and PKCS#8 (`BEGIN PRIVATE KEY`) input formats.
+ */
+function normalizePrivateKey(rawKey: string): string {
+  try {
+    const keyObject = crypto.createPrivateKey(rawKey);
+    const normalized = keyObject.export({ type: 'pkcs8', format: 'pem' }) as string;
+    console.error('[ssh] Private key normalized to PKCS#8 PEM format successfully');
+    return normalized;
+  } catch (err) {
+    console.error('[ssh] Warning: Could not normalize private key format:', (err as Error).message);
+    console.error('[ssh] Passing key to ssh2 as-is (may fail if format is unsupported)');
+    return rawKey;
+  }
+}
+
 function getPrivateKey(): string {
+  let rawKey: string;
+
   if (SSH_KEY_ENV) {
-    return SSH_KEY_ENV;
+    rawKey = SSH_KEY_ENV;
+  } else if (fs.existsSync(PRIVATE_KEY_PATH)) {
+    rawKey = fs.readFileSync(PRIVATE_KEY_PATH, 'utf-8');
+  } else {
+    throw new Error('No SSH private key available. Run initSSHKeys() first or set VM_SSH_KEY env var.');
   }
 
-  if (fs.existsSync(PRIVATE_KEY_PATH)) {
-    return fs.readFileSync(PRIVATE_KEY_PATH, 'utf-8');
-  }
-
-  throw new Error('No SSH private key available. Run initSSHKeys() first or set VM_SSH_KEY env var.');
+  return normalizePrivateKey(rawKey);
 }
 
 function createConnection(): Promise<Client> {
