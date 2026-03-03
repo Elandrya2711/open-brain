@@ -9,6 +9,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import express from 'express';
 import { tools, getTool } from './tools/index.js';
 import { closePool } from './db.js';
+import { createOAuthRouter, verifyJwt } from './oauth.js';
 
 const PORT = 3000;
 const API_KEY = process.env.OPEN_BRAIN_API_KEY;
@@ -97,8 +98,14 @@ async function startMcpServer() {
 function startHttpServer() {
   const app = express();
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
 
-  // Bearer token middleware
+  // Mount OAuth routes (no auth required for these endpoints)
+  if (API_KEY) {
+    app.use(createOAuthRouter(API_KEY));
+  }
+
+  // Dual-auth middleware: accepts both static API key and OAuth JWT tokens
   const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (!API_KEY) {
       return res.status(500).json({ error: 'API key not configured' });
@@ -106,15 +113,28 @@ function startHttpServer() {
 
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      // Return 401 with WWW-Authenticate header for OAuth discovery
+      const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+      const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || 'localhost:3000';
+      const resourceMetadataUrl = `${proto}://${host}/.well-known/oauth-protected-resource`;
+      res.setHeader('WWW-Authenticate', `Bearer resource_metadata="${resourceMetadataUrl}"`);
       return res.status(401).json({ error: 'Missing or invalid authorization' });
     }
 
     const token = authHeader.substring(7);
-    if (token !== API_KEY) {
-      return res.status(403).json({ error: 'Invalid API key' });
+
+    // Check 1: Direct API key (existing behavior, unchanged)
+    if (token === API_KEY) {
+      return next();
     }
 
-    next();
+    // Check 2: OAuth JWT token
+    const payload = verifyJwt(token, API_KEY);
+    if (payload) {
+      return next();
+    }
+
+    return res.status(403).json({ error: 'Invalid API key or token' });
   };
 
   // Health check endpoint (no auth)
