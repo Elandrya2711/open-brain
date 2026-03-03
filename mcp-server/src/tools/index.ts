@@ -11,6 +11,9 @@ import { tool as shellExecTool } from './vm/shell_exec.js';
 import { tool as shellExecSudoTool } from './vm/shell_exec_sudo.js';
 import { tool as fileReadTool } from './vm/file_read.js';
 import { tool as fileWriteTool } from './vm/file_write.js';
+import { tool as fileEditTool } from './vm/file_edit.js';
+import { tool as fileGlobTool } from './vm/file_glob.js';
+import { tool as fileGrepTool } from './vm/file_grep.js';
 import { tool as serviceStatusTool } from './vm/service_status.js';
 // OpenClaw tools
 import { tool as openclawStatusTool } from './openclaw/status.js';
@@ -44,6 +47,9 @@ export const tools: ToolDefinition[] = [
   shellExecSudoTool as ToolDefinition,
   fileReadTool as ToolDefinition,
   fileWriteTool as ToolDefinition,
+  fileEditTool as ToolDefinition,
+  fileGlobTool as ToolDefinition,
+  fileGrepTool as ToolDefinition,
   serviceStatusTool as ToolDefinition,
   // OpenClaw tools
   openclawStatusTool as ToolDefinition,

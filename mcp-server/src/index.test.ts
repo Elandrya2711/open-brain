@@ -8,9 +8,9 @@ import { getToolsList, getTool } from './tools/index.js';
 
 describe('MCP Server', () => {
   describe('Tools Registration', () => {
-    it('should have all 18 tools registered', () => {
+    it('should have all 21 tools registered', () => {
       const tools = getToolsList();
-      expect(tools).toHaveLength(18);
+      expect(tools).toHaveLength(21);
     });
 
     it('should have store_memory tool', () => {
