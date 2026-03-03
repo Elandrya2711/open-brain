@@ -10,6 +10,7 @@ import express from 'express';
 import { tools, getTool } from './tools/index.js';
 import { closePool } from './db.js';
 import { createOAuthRouter, verifyJwt } from './oauth.js';
+import { initSSHKeys, getPublicKey, closeSSH } from './ssh.js';
 
 const PORT = 3000;
 const API_KEY = process.env.OPEN_BRAIN_API_KEY;
@@ -137,9 +138,13 @@ function startHttpServer() {
     return res.status(403).json({ error: 'Invalid API key or token' });
   };
 
-  // Health check endpoint (no auth)
+  // Health check endpoint (no auth) — includes SSH public key for VM setup
   app.get('/health', (req, res) => {
-    res.json({ status: 'ok' });
+    const publicKey = getPublicKey();
+    res.json({
+      status: 'ok',
+      ...(publicKey && { sshPublicKey: publicKey }),
+    });
   });
 
   // Auto-fix Accept header for StreamableHTTPServerTransport
@@ -191,12 +196,14 @@ function startHttpServer() {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.error('[Server] Shutting down gracefully...');
+  await closeSSH();
   await closePool();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.error('[Server] Shutting down gracefully...');
+  await closeSSH();
   await closePool();
   process.exit(0);
 });
@@ -204,6 +211,14 @@ process.on('SIGTERM', async () => {
 // Start both servers
 async function main() {
   console.error('[Server] Starting Open Brain MCP Server...');
+
+  // Initialize SSH keys (generates keypair on first run, loads from volume on subsequent runs)
+  try {
+    await initSSHKeys();
+  } catch (error) {
+    console.error('[Server] SSH key initialization failed (VM tools will not work):', error instanceof Error ? error.message : error);
+  }
+
   startMcpServer().catch(error => {
     console.error('[MCP Server Error]', error);
     process.exit(1);

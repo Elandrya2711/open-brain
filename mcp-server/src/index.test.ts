@@ -2,14 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./db.js');
 vi.mock('./embeddings.js');
+vi.mock('./ssh.js');
 
 import { getToolsList, getTool } from './tools/index.js';
 
 describe('MCP Server', () => {
   describe('Tools Registration', () => {
-    it('should have all 7 tools registered', () => {
+    it('should have all 18 tools registered', () => {
       const tools = getToolsList();
-      expect(tools).toHaveLength(7);
+      expect(tools).toHaveLength(18);
     });
 
     it('should have store_memory tool', () => {
