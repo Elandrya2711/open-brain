@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import type { Memory, MemoryStats } from '../db.js';
+import type { Memory, MemoryStats, SoulVersion } from '../db.js';
 
 export const insertMemory = vi.fn().mockImplementation(async (
   content: string,
@@ -42,8 +42,30 @@ export const deleteMemory = vi.fn().mockImplementation(async (
   return true;
 });
 
+export const getActiveSoul = vi.fn().mockImplementation(async (
+  at?: string
+): Promise<SoulVersion | null> => {
+  return {
+    id: 'test-soul-uuid',
+    content: '# Test Soul\nThis is a test soul.',
+    valid_from: '2025-01-01T00:00:00.000Z',
+    valid_until: null,
+  };
+});
+
+export const syncSoul = vi.fn().mockImplementation(async (
+  content: string
+): Promise<SoulVersion> => {
+  return {
+    id: 'test-soul-uuid-new',
+    content,
+    valid_from: new Date().toISOString(),
+    valid_until: null,
+  };
+});
+
 export const closePool = vi.fn().mockImplementation(async () => {
   // noop
 });
 
-export default { insertMemory, similaritySearch, getRecentMemories, getStats, deleteMemory, closePool };
+export default { insertMemory, similaritySearch, getRecentMemories, getStats, deleteMemory, getActiveSoul, syncSoul, closePool };

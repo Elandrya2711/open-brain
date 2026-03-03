@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { tool } from './store.js';
-import * as embeddings from '../../__mocks__/embeddings.js';
-import * as db from '../../__mocks__/db.js';
 
-vi.mock('../../embeddings.js', () => embeddings);
-vi.mock('../../db.js', () => db);
+vi.mock('../../embeddings.js');
+vi.mock('../../db.js');
+
+import { tool } from './store.js';
+import { generateEmbedding } from '../../embeddings.js';
+import { insertMemory } from '../../db.js';
+
+const mockedGenerateEmbedding = vi.mocked(generateEmbedding);
+const mockedInsertMemory = vi.mocked(insertMemory);
 
 describe('store_memory tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedGenerateEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
+    mockedInsertMemory.mockResolvedValue('test-uuid-123');
   });
 
   it('should store memory successfully', async () => {
@@ -22,8 +28,8 @@ describe('store_memory tool', () => {
       id: expect.any(String),
       message: 'Memory stored successfully with type: note',
     });
-    expect(embeddings.generateEmbedding).toHaveBeenCalledWith('Test memory content');
-    expect(db.insertMemory).toHaveBeenCalled();
+    expect(mockedGenerateEmbedding).toHaveBeenCalledWith('Test memory content');
+    expect(mockedInsertMemory).toHaveBeenCalled();
   });
 
   it('should use default type when not provided', async () => {
@@ -32,7 +38,7 @@ describe('store_memory tool', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(db.insertMemory).toHaveBeenCalled();
+    expect(mockedInsertMemory).toHaveBeenCalled();
   });
 
   it('should reject empty content', async () => {
@@ -42,9 +48,9 @@ describe('store_memory tool', () => {
 
     expect(result).toEqual({
       success: false,
-      error: 'Content cannot be empty',
+      error: 'Content is required and must be a string',
     });
-    expect(embeddings.generateEmbedding).not.toHaveBeenCalled();
+    expect(mockedGenerateEmbedding).not.toHaveBeenCalled();
   });
 
   it('should reject undefined content', async () => {
@@ -57,7 +63,7 @@ describe('store_memory tool', () => {
   });
 
   it('should handle embedding generation errors', async () => {
-    embeddings.generateEmbedding.mockRejectedValueOnce(new Error('API Error'));
+    mockedGenerateEmbedding.mockRejectedValueOnce(new Error('API Error'));
 
     const result = await tool.handler({
       content: 'Test memory',
@@ -73,7 +79,7 @@ describe('store_memory tool', () => {
       summary: 'Test summary',
     });
 
-    expect(db.insertMemory).toHaveBeenCalledWith(
+    expect(mockedInsertMemory).toHaveBeenCalledWith(
       'Test memory',
       expect.any(Array),
       'note',
@@ -87,6 +93,9 @@ describe('store_memory tool', () => {
 
     for (const type of types) {
       vi.clearAllMocks();
+      mockedGenerateEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
+      mockedInsertMemory.mockResolvedValue('test-uuid-123');
+
       const result = await tool.handler({
         content: 'Test memory',
         type,

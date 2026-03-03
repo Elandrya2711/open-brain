@@ -1,12 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { tool } from './stats.js';
-import * as db from '../../__mocks__/db.js';
 
-vi.mock('../../db.js', () => db);
+vi.mock('../../db.js');
+
+import { tool } from './stats.js';
+import { getStats } from '../../db.js';
+
+const mockedGetStats = vi.mocked(getStats);
 
 describe('get_stats tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedGetStats.mockResolvedValue({
+      total: 0,
+      byType: {},
+      oldestDate: '',
+      newestDate: '',
+    });
   });
 
   it('should return empty stats when no memories exist', async () => {
@@ -24,7 +33,7 @@ describe('get_stats tool', () => {
   });
 
   it('should return correct stats', async () => {
-    db.getStats.mockResolvedValueOnce({
+    mockedGetStats.mockResolvedValueOnce({
       total: 42,
       byType: {
         note: 25,
@@ -53,7 +62,7 @@ describe('get_stats tool', () => {
   });
 
   it('should handle database errors', async () => {
-    db.getStats.mockRejectedValueOnce(new Error('DB Error'));
+    mockedGetStats.mockRejectedValueOnce(new Error('DB Error'));
 
     const result = await tool.handler({});
 

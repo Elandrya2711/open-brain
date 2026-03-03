@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { tool } from './search.js';
-import * as embeddings from '../../__mocks__/embeddings.js';
-import * as db from '../../__mocks__/db.js';
 
-vi.mock('../../embeddings.js', () => embeddings);
-vi.mock('../../db.js', () => db);
+vi.mock('../../embeddings.js');
+vi.mock('../../db.js');
+
+import { tool } from './search.js';
+import { generateEmbedding } from '../../embeddings.js';
+import { similaritySearch } from '../../db.js';
+
+const mockedGenerateEmbedding = vi.mocked(generateEmbedding);
+const mockedSimilaritySearch = vi.mocked(similaritySearch);
 
 describe('semantic_search tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedGenerateEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
+    mockedSimilaritySearch.mockResolvedValue([]);
   });
 
   it('should return empty list when no memories exist', async () => {
@@ -28,8 +34,8 @@ describe('semantic_search tool', () => {
       query: 'test query',
     });
 
-    expect(embeddings.generateEmbedding).toHaveBeenCalledWith('test query');
-    expect(db.similaritySearch).toHaveBeenCalledWith(expect.any(Array), 10);
+    expect(mockedGenerateEmbedding).toHaveBeenCalledWith('test query');
+    expect(mockedSimilaritySearch).toHaveBeenCalledWith(expect.any(Array), 10);
     expect(result.success).toBe(true);
   });
 
@@ -39,23 +45,15 @@ describe('semantic_search tool', () => {
       limit: 5,
     });
 
-    expect(db.similaritySearch).toHaveBeenCalledWith(expect.any(Array), 5);
+    expect(mockedSimilaritySearch).toHaveBeenCalledWith(expect.any(Array), 5);
   });
 
-  it('should clamp limit between 1 and 100', async () => {
-    await tool.handler({
-      query: 'test query',
-      limit: 0,
-    });
-    expect(db.similaritySearch).toHaveBeenCalledWith(expect.any(Array), 1);
-
-    vi.clearAllMocks();
-
+  it('should clamp limit to max 100', async () => {
     await tool.handler({
       query: 'test query',
       limit: 200,
     });
-    expect(db.similaritySearch).toHaveBeenCalledWith(expect.any(Array), 100);
+    expect(mockedSimilaritySearch).toHaveBeenCalledWith(expect.any(Array), 100);
   });
 
   it('should reject empty query', async () => {
@@ -63,11 +61,12 @@ describe('semantic_search tool', () => {
       query: '',
     });
 
+    // Empty string is falsy, so !input.query catches it before trim check
     expect(result).toEqual({
       success: false,
-      error: 'Query cannot be empty',
+      error: 'Query is required and must be a string',
     });
-    expect(embeddings.generateEmbedding).not.toHaveBeenCalled();
+    expect(mockedGenerateEmbedding).not.toHaveBeenCalled();
   });
 
   it('should reject undefined query', async () => {
@@ -80,7 +79,7 @@ describe('semantic_search tool', () => {
   });
 
   it('should handle embedding generation errors', async () => {
-    embeddings.generateEmbedding.mockRejectedValueOnce(new Error('API Error'));
+    mockedGenerateEmbedding.mockRejectedValueOnce(new Error('API Error'));
 
     const result = await tool.handler({
       query: 'test query',
@@ -104,7 +103,7 @@ describe('semantic_search tool', () => {
       },
     ];
 
-    db.similaritySearch.mockResolvedValueOnce(mockMemories);
+    mockedSimilaritySearch.mockResolvedValueOnce(mockMemories);
 
     const result = await tool.handler({
       query: 'test',

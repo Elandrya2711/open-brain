@@ -30,6 +30,9 @@ RUN npm ci --production --no-audit || npm install --production
 # Copy built application from builder
 COPY --from=builder /app/dist ./dist
 
+# Copy migration files (needed at runtime by node-pg-migrate)
+COPY migrations ./migrations
+
 # Expose port
 EXPOSE 3000
 
