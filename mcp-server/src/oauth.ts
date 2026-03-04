@@ -363,6 +363,15 @@ export function createOAuthRouter(apiKey: string): Router {
     const refreshHash = hashToken(refreshToken);
     const refreshExpiresAt = new Date(Date.now() + REFRESH_TOKEN_LIFETIME_MS);
 
+    // Ensure client exists (some clients skip /register and use metadata URLs as client_id)
+    await saveClient({
+      clientId,
+      redirectUris: ['https://localhost'],
+      grantTypes: ['authorization_code', 'refresh_token'],
+      responseTypes: ['code'],
+      tokenEndpointAuthMethod: 'none',
+    });
+
     await saveRefreshToken(refreshHash, clientId, scope, refreshExpiresAt);
 
     res.json({
